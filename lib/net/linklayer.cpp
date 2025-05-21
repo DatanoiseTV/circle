@@ -87,7 +87,8 @@ void CLinkLayer::Process (void)
 
 		CMACAddress MACAddressReceiver (pHeader->MACReceiver);
 		if (    MACAddressReceiver != *pOwnMACAddress
-		    && !MACAddressReceiver.IsBroadcast ())
+		    && !MACAddressReceiver.IsBroadcast ()
+		    && !MACAddressReceiver.IsMulticast ()) // Added check
 		{
 			continue;
 		}
@@ -164,14 +165,7 @@ boolean CLinkLayer::Send (const CIPAddress &rReceiver, const void *pIPPacket, un
 	}
 	else if (rReceiver.IsMulticast ())
 	{
-		u8 TempMACAddress[MAC_ADDRESS_SIZE];
-		rReceiver.CopyTo (TempMACAddress + 2);
-
-		TempMACAddress[0] = 0x01;
-		TempMACAddress[1] = 0x00;
-		TempMACAddress[2] = 0x5E;
-
-		MACAddressReceiver.Set (TempMACAddress);
+		MACAddressReceiver.SetToMulticastIP (rReceiver);
 	}
 	else if (!m_pARPHandler->Resolve (rReceiver, &MACAddressReceiver,
 					  FrameBuffer, nFrameLength))
