@@ -438,7 +438,10 @@ int CUDPConnection::JoinMulticastGroup (const CIPAddress &rGroupAddress)
 	}
 
 	m_MulticastGroup = rGroupAddress;
-	// Future: Inform lower layers if needed (e.g., for IGMP or finer MAC filtering)
+	
+	assert(m_pNetworkLayer != 0); // Ensure network layer is available
+	m_pNetworkLayer->NotifyJoinGroup(rGroupAddress); // Notify for IGMP Report
+
 	return 0; // Success
 }
 
@@ -446,9 +449,11 @@ int CUDPConnection::LeaveMulticastGroup (const CIPAddress &rGroupAddress)
 {
 	if (m_MulticastGroup.IsSet() && m_MulticastGroup == rGroupAddress)
 	{
+		assert(m_pNetworkLayer != 0); // Ensure network layer is available
+		m_pNetworkLayer->NotifyLeaveGroup(rGroupAddress); // Notify for IGMP Leave
+
 		m_MulticastGroup = CIPAddress(); // Assign a new, invalid CIPAddress
 	}
-	// Future: Inform lower layers if needed
 	return 0; // Success (even if not joined to this specific group)
 }
 

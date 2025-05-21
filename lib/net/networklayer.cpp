@@ -27,7 +27,8 @@ CNetworkLayer::CNetworkLayer (CNetConfig *pNetConfig, CLinkLayer *pLinkLayer)
 :	m_pNetConfig (pNetConfig),
 	m_pLinkLayer (pLinkLayer),
 	m_pICMPHandler (0),
-	m_pICMPRxQueue2 (0)
+	m_pICMPRxQueue2 (0),
+	m_pIGMPHandler (0) // Initialize here
 {
 	assert (m_pNetConfig != 0);
 	assert (m_pLinkLayer != 0);
@@ -41,6 +42,9 @@ CNetworkLayer::~CNetworkLayer (void)
 	delete m_pICMPHandler;
 	m_pICMPHandler = 0;
 
+	delete m_pIGMPHandler; // Add this
+	m_pIGMPHandler = 0;    // Add this
+
 	m_pLinkLayer = 0;
 	m_pNetConfig = 0;
 }
@@ -50,6 +54,17 @@ boolean CNetworkLayer::Initialize (void)
 	assert (m_pICMPHandler == 0);
 	m_pICMPHandler = new CICMPHandler (m_pNetConfig, this, &m_ICMPRxQueue, &m_ICMPNotificationQueue);
 	assert (m_pICMPHandler != 0);
+
+	assert (m_pIGMPHandler == 0); // Add this block
+	m_pIGMPHandler = new CIGMPHandler (m_pNetConfig, this);
+	assert (m_pIGMPHandler != 0);
+	if (!m_pIGMPHandler->Initialize())
+	{
+		// CLogger::Get()->Write(LogTagNetwork, LogError, "IGMP Handler initialization failed"); // Assuming LogTagNetwork exists
+		// Using a generic log tag for now, as CNetworkLayer doesn't have its own LogTag field
+		CLogger::Get()->Write("network", LogError, "IGMP Handler initialization failed");
+		return FALSE;
+	}
 
 	return TRUE;
 }
@@ -148,7 +163,16 @@ void CNetworkLayer::Process (void)
 
 			m_ICMPRxQueue.Enqueue (Buffer+nHeaderLength, nResultLength, pParam);
 		}
-		else
+		else if (pHeader->nProtocol == IPPROTO_IGMP) // Check for IPPROTO_IGMP (value is 2)
+		{
+			if (m_pIGMPHandler != 0)
+			{
+				CIPAddress senderIP(pParam->SourceAddress); // pParam is TNetworkPrivateData
+				m_pIGMPHandler->ProcessPacket(Buffer+nHeaderLength, nResultLength, senderIP);
+			}
+			delete pParam; // Consume the pParam for IGMP packets here
+		}
+		else // Other protocols (UDP, TCP)
 		{
 			m_RxQueue.Enqueue (Buffer+nHeaderLength, nResultLength, pParam);
 		}
@@ -156,6 +180,11 @@ void CNetworkLayer::Process (void)
 
 	assert (m_pICMPHandler != 0);
 	m_pICMPHandler->Process ();
+	
+	// TODO: Add m_pIGMPHandler->ProcessTimer() or similar if IGMP needs periodic processing
+	// For now, IGMP processing is purely reactive to received packets or join/leave calls.
+	// If timers are added in CIGMPHandler for query responses, then a Process() or TimerTick()
+	// method would be needed here, called from CNetTask or similar.
 }
 
 boolean CNetworkLayer::Send (const CIPAddress &rReceiver, const void *pPacket, unsigned nLength, int nProtocol)
@@ -380,4 +409,20 @@ void CNetworkLayer::SendFailed (unsigned nICMPCode, const void *pReturnedPacket,
 {
 	assert (m_pICMPHandler != 0);
 	m_pICMPHandler->DestinationUnreachable (nICMPCode, pReturnedPacket, nLength);
+}
+
+void CNetworkLayer::NotifyJoinGroup(const CIPAddress &rGroupAddress)
+{
+	if (m_pIGMPHandler != 0)
+	{
+		m_pIGMPHandler->JoinGroup(rGroupAddress);
+	}
+}
+
+void CNetworkLayer::NotifyLeaveGroup(const CIPAddress &rGroupAddress)
+{
+	if (m_pIGMPHandler != 0)
+	{
+		m_pIGMPHandler->LeaveGroup(rGroupAddress);
+	}
 }
