@@ -50,6 +50,7 @@ CUDPConnection::CUDPConnection (CNetConfig	*pNetConfig,
 	m_bBroadcastsAllowed (FALSE),
 	m_nErrno (0)
 {
+	// m_MulticastGroup is default constructed (invalid)
 }
 
 CUDPConnection::CUDPConnection (CNetConfig	*pNetConfig,
@@ -61,6 +62,7 @@ CUDPConnection::CUDPConnection (CNetConfig	*pNetConfig,
 	m_bBroadcastsAllowed (FALSE),
 	m_nErrno (0)
 {
+	// m_MulticastGroup is default constructed (invalid)
 }
 
 CUDPConnection::~CUDPConnection (void)
@@ -348,26 +350,48 @@ int CUDPConnection::PacketReceived (const void *pPacket, unsigned nLength,
 	}
 
 	assert (m_pNetConfig != 0);
-
 	u16 nSourcePort = be2le16 (pHeader->nSourcePort);
-	if (m_bActiveOpen)
-	{
-		if (m_nForeignPort != nSourcePort)
-		{
-			return 0;
-		}
 
-		if (   m_ForeignIP != rSenderIP
-		    && !m_ForeignIP.IsBroadcast ()
-		    && m_ForeignIP != *m_pNetConfig->GetBroadcastAddress ())
+	boolean isForThisConnection = FALSE;
+
+	if (rReceiverIP.IsMulticast())
+	{
+		if (IsMulticastConnection() && m_MulticastGroup == rReceiverIP)
 		{
-			return 0;
+			isForThisConnection = TRUE;
+		}
+	}
+	else if (m_bActiveOpen) // Unicast "connected" socket
+	{
+		if (m_nForeignPort == nSourcePort && m_ForeignIP == rSenderIP)
+		{
+			isForThisConnection = TRUE;
+		}
+	}
+	else // Unicast passive (listening) socket (not m_bActiveOpen, not multicast)
+	{
+		if (rReceiverIP.IsBroadcast() || rReceiverIP == *m_pNetConfig->GetBroadcastAddress())
+		{
+			if (m_bBroadcastsAllowed)
+			{
+				isForThisConnection = TRUE;
+			}
+		}
+		else // Regular unicast packet to our port
+		{
+			isForThisConnection = TRUE;
 		}
 	}
 
+	if (!isForThisConnection)
+	{
+		return 0; // Not for me
+	}
+
+	// Original checksum logic
 	if (nLength < be2le16 (pHeader->nLength))
 	{
-		return -1;
+		return -1; // Error: Incomplete packet
 	}
 	
 	if (pHeader->nChecksum != UDP_CHECKSUM_NONE)
@@ -377,16 +401,12 @@ int CUDPConnection::PacketReceived (const void *pPacket, unsigned nLength,
 
 		if (m_Checksum.Calculate (pPacket, nLength) != CHECKSUM_OK)
 		{
-			return -1;
+			return -1; // Error: Checksum failed
 		}
 	}
 
-	if (   !m_bBroadcastsAllowed
-	    && (   rReceiverIP.IsBroadcast ()
-	        || rReceiverIP == *m_pNetConfig->GetBroadcastAddress ()))
-	{
-		return 1;
-	}
+	// The broadcast filtering logic is now part of the isForThisConnection check.
+	// If it's a broadcast and not allowed, isForThisConnection would be false.
 
 	nLength -= sizeof (TUDPHeader);
 	assert (nLength > 0);
@@ -401,6 +421,45 @@ int CUDPConnection::PacketReceived (const void *pPacket, unsigned nLength,
 	m_Event.Set ();
 
 	return 1;
+}
+
+int CUDPConnection::JoinMulticastGroup (const CIPAddress &rGroupAddress)
+{
+	if (!rGroupAddress.IsSet() || !rGroupAddress.IsMulticast())
+	{
+		return -1; // Invalid address or not a multicast address
+	}
+
+	if (m_bActiveOpen)
+	{
+		// Cannot be an active connection if we want to receive multicast.
+		// User should use the constructor for passive/multicast listening.
+		return -1; 
+	}
+
+	m_MulticastGroup = rGroupAddress;
+	
+	assert(m_pNetworkLayer != 0); // Ensure network layer is available
+	m_pNetworkLayer->NotifyJoinGroup(rGroupAddress); // Notify for IGMP Report
+
+	return 0; // Success
+}
+
+int CUDPConnection::LeaveMulticastGroup (const CIPAddress &rGroupAddress)
+{
+	if (m_MulticastGroup.IsSet() && m_MulticastGroup == rGroupAddress)
+	{
+		assert(m_pNetworkLayer != 0); // Ensure network layer is available
+		m_pNetworkLayer->NotifyLeaveGroup(rGroupAddress); // Notify for IGMP Leave
+
+		m_MulticastGroup = CIPAddress(); // Assign a new, invalid CIPAddress
+	}
+	return 0; // Success (even if not joined to this specific group)
+}
+
+boolean CUDPConnection::IsMulticastConnection(void) const
+{
+	return m_MulticastGroup.IsSet() && m_MulticastGroup.IsMulticast();
 }
 
 int CUDPConnection::NotificationReceived (TICMPNotificationType  Type,

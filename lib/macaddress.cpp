@@ -18,6 +18,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 #include <circle/macaddress.h>
+#include <circle/net/ipaddress.h>
 #include <circle/util.h>
 #include <assert.h>
 
@@ -101,4 +102,29 @@ void CMACAddress::Format (CString *pString) const
 			(unsigned) m_Address[0], (unsigned) m_Address[1],
 			(unsigned) m_Address[2], (unsigned) m_Address[3],
 			(unsigned) m_Address[4], (unsigned) m_Address[5]);
+}
+
+boolean CMACAddress::IsMulticast (void) const
+{
+	assert (m_bValid);
+	// A MAC address is multicast if the least significant bit
+	// of the first octet is set.
+	return (m_Address[0] & 0x01) != 0;
+}
+
+void CMACAddress::SetToMulticastIP (const CIPAddress &rIPAddress)
+{
+	assert (rIPAddress.IsSet ());
+	assert (rIPAddress.IsMulticast ()); // Should only be called with a multicast IP
+
+	const u8 *pIPBytes = rIPAddress.Get (); // Returns IP octets A.B.C.D as pIPBytes[0]=A, pIPBytes[1]=B, etc.
+
+	m_Address[0] = 0x01;
+	m_Address[1] = 0x00;
+	m_Address[2] = 0x5E;
+	m_Address[3] = pIPBytes[1] & 0x7F; // Second IP octet (B) with MSB cleared
+	m_Address[4] = pIPBytes[2];        // Third IP octet (C)
+	m_Address[5] = pIPBytes[3];        // Fourth IP octet (D)
+
+	m_bValid = TRUE;
 }

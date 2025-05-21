@@ -25,6 +25,7 @@
 #include <circle/net/netqueue.h>
 #include <circle/net/ipaddress.h>
 #include <circle/net/icmphandler.h>
+#include <circle/net/igmphandler.h> // Add this
 #include <circle/net/routecache.h>
 #include <circle/macros.h>
 #include <circle/types.h>
@@ -56,6 +57,8 @@ struct TIPHeader
 #define IP_OPTION_SIZE		0	// not used so far
 }
 PACKED;
+
+class CIGMPHandler; // Add this before CNetworkLayer declaration
 
 struct TNetworkPrivateData
 {
@@ -90,6 +93,9 @@ public:
 	boolean ReceiveICMP (void *pBuffer, unsigned *pResultLength,
 			     CIPAddress *pSender, CIPAddress *pReceiver);
 
+	void NotifyJoinGroup(const CIPAddress &rGroupAddress);
+	void NotifyLeaveGroup(const CIPAddress &rGroupAddress);
+
 private:
 	void AddRoute (const u8 *pDestIP, const u8 *pGatewayIP);
 	const u8 *GetGateway (const u8 *pDestIP) const;
@@ -103,6 +109,7 @@ private:
 	CNetConfig   *m_pNetConfig;
 	CLinkLayer   *m_pLinkLayer;
 	CICMPHandler *m_pICMPHandler;
+	CIGMPHandler *m_pIGMPHandler; // Add this
 
 	CNetQueue m_RxQueue;
 	CNetQueue m_ICMPRxQueue;

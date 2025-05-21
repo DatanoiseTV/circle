@@ -22,6 +22,7 @@
 
 #include <circle/string.h>
 #include <circle/types.h>
+#include <circle/net/ipaddress.h>
 
 #define MAC_ADDRESS_SIZE	6
 
@@ -44,6 +45,9 @@ public:
 	unsigned GetSize (void) const;
 
 	void Format (CString *pString) const;
+
+	boolean IsMulticast (void) const;
+	void SetToMulticastIP (const CIPAddress &rIPAddress);
 	
 private:
 	boolean m_bValid;
