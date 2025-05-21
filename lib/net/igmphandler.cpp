@@ -11,8 +11,8 @@ static const char LogTag[] = "IGMP";
 CIGMPHandler::CIGMPHandler (CNetConfig *pNetConfig, CNetworkLayer *pNetworkLayer)
 :	m_pNetConfig (pNetConfig),
 	m_pNetworkLayer (pNetworkLayer),
-	m_Timer (this, FALSE), // FALSE means it's not a periodic timer initially
-	m_bReportScheduled (FALSE) // Initialize here
+	m_hKernelTimer (0), // Initialize kernel timer handle
+	m_bReportScheduled (FALSE)
 {
 	assert (m_pNetConfig != 0);
 	assert (m_pNetworkLayer != 0);
@@ -21,7 +21,11 @@ CIGMPHandler::CIGMPHandler (CNetConfig *pNetConfig, CNetworkLayer *pNetworkLayer
 
 CIGMPHandler::~CIGMPHandler (void)
 {
-	m_Timer.Cancel ();
+	if (m_hKernelTimer != 0)
+	{
+		CTimer::Get()->CancelKernelTimer(m_hKernelTimer);
+		m_hKernelTimer = 0;
+	}
 
 	while (!m_JoinedGroups.IsEmpty ())
 	{
@@ -96,12 +100,19 @@ void CIGMPHandler::LeaveGroup (const CIPAddress &rGroupAddress)
 		return;
 	}
 
-	// TODO: Send IGMP V2 Leave Group message
-	// Only send if we are the last host for this group (RFC 2236 Page 10 says "SHOULD").
-	// For simplicity, we might always send it. Routers are robust.
-	// However, the actual check is if the Querier's Robustness Variable is not 1.
-	// Simpler: If we were the one that reported, we should send leave.
-	SendLeaveGroup(rGroupAddress);
+	SendLeaveGroup(rGroupAddress); // Send IGMP Leave
+
+	if (m_bReportScheduled && m_ScheduledGroupAddress == rGroupAddress)
+	{
+		if (m_hKernelTimer != 0)
+		{
+			CLogger::Get()->Write(LogTag, LogDebug, "Leaving group %s, cancelling its scheduled report", rGroupAddress.GetText());
+			CTimer::Get()->CancelKernelTimer(m_hKernelTimer);
+			m_hKernelTimer = 0;
+		}
+		m_bReportScheduled = FALSE;
+		m_ScheduledGroupAddress = CIPAddress(); // Invalidate
+	}
 
 	m_JoinedGroups.Remove(pGroup);
 	delete pGroup;
@@ -191,19 +202,43 @@ void CIGMPHandler::ProcessPacket (const void *pPacket, unsigned nLength, const C
 			}
 
 			if (m_ScheduledGroupAddress.IsSet() && m_ScheduledGroupAddress.IsMulticast()) {
-				// Generate random delay between 0 and maxRespTimeMs
+				// Cancel any previously scheduled timer for reporting.
+				if (m_hKernelTimer != 0) {
+					CTimer::Get()->CancelKernelTimer(m_hKernelTimer);
+					m_hKernelTimer = 0; // Important: clear handle after cancelling
+				}
+
 				u32 randomDelayMs = 0;
 				if (maxRespTimeMs > 0) {
-					// CScheduler::GetRandomNumber() returns a u32.
-					// The result of % maxRespTimeMs will be 0 to maxRespTimeMs-1.
-					randomDelayMs = CScheduler::GetRandomNumber() % maxRespTimeMs;
+					 randomDelayMs = CScheduler::GetRandomNumber() % maxRespTimeMs;
+					 // Ensure a minimum delay if maxRespTimeMs is very small but non-zero,
+					 // or if random resulted in 0 but we want some delay.
+					 // HZ is 100. Smallest tick delay is 1 (10ms).
+					 if (randomDelayMs < 10 && maxRespTimeMs >=10 ) randomDelayMs = 10; // Min 10ms if possible
+					 else if (randomDelayMs == 0 && maxRespTimeMs > 0) randomDelayMs = 1; // Or ensure at least 1ms for calc
 				}
 				
-				CLogger::Get()->Write(LogTag, LogDebug, "Scheduling report for %s in %ums", 
-									  m_ScheduledGroupAddress.GetText(), randomDelayMs);
-				// CTimer::Set takes CTimeDuration or (seconds, microseconds)
-				m_Timer.Set(CTimeDuration(randomDelayMs / 1000, (randomDelayMs % 1000) * 1000));
-				m_bReportScheduled = TRUE;
+				unsigned nDelayTicks = MSEC2HZ(randomDelayMs);
+				if (nDelayTicks == 0 && randomDelayMs > 0) { // Ensure at least 1 tick if there's any delay
+					nDelayTicks = 1;
+				}
+				// If maxRespTimeMs was 0, nDelayTicks will be 0, meaning report ASAP.
+				// StartKernelTimer with nDelay=0 should be immediate or next tick.
+
+				CLogger::Get()->Write(LogTag, LogDebug, "Scheduling report for %s in %u ms (%u ticks)", 
+									  m_ScheduledGroupAddress.GetText(), randomDelayMs, nDelayTicks);
+				
+				m_hKernelTimer = CTimer::Get()->StartKernelTimer(nDelayTicks, 
+																 StaticTimerHandler, 
+																 this,  // pParam for StaticTimerHandler
+																 0);    // pContext (unused here)
+				if (m_hKernelTimer == 0) { // Check if timer start failed (should not happen if params are valid)
+					 CLogger::Get()->Write(LogTag, LogError, "Failed to start kernel timer for %s", m_ScheduledGroupAddress.GetText());
+					 m_bReportScheduled = FALSE; // Don't consider it scheduled
+				} else {
+					 m_bReportScheduled = TRUE;
+					 // m_ScheduledGroupAddress is already set prior to this block
+				}
 			}
 			break;
 		}
@@ -300,4 +335,33 @@ void CIGMPHandler::TimerHandler(void)
 	// Here one could re-scan m_JoinedGroups, find the next group that needs reporting (if any),
 	// calculate a new random delay for it, and set m_Timer again.
 	// For this simplified version, we only handle one report per query.
+}
+
+void CIGMPHandler::StaticTimerHandler(TKernelTimerHandle hTimer, void *pParam, void *pContext)
+{
+	CIGMPHandler *pThis = (CIGMPHandler *) pParam;
+	assert(pThis != 0);
+
+	// Optional: Check if hTimer matches pThis->m_hKernelTimer if needed,
+	// though for a single pending timer per instance, it should.
+	// if (hTimer != pThis->m_hKernelTimer) { return; }
+
+	pThis->InstanceTimerHandler();
+	pThis->m_hKernelTimer = 0; // Timer has fired and is done (kernel timers are one-shot unless re-added)
+}
+
+void CIGMPHandler::InstanceTimerHandler(void)
+{
+	if (m_bReportScheduled && m_ScheduledGroupAddress.IsSet() && m_ScheduledGroupAddress.IsMulticast())
+	{
+		CLogger::Get()->Write(LogTag, LogDebug, "Timer fired: Sending scheduled report for %s", m_ScheduledGroupAddress.GetText());
+		SendMembershipReport(m_ScheduledGroupAddress, FALSE); // FALSE because it's a solicited report (response to query)
+	}
+	m_bReportScheduled = FALSE;
+	m_ScheduledGroupAddress = CIPAddress(); // Invalidate to show it's handled or no longer scheduled
+	// To handle more groups for general queries: 
+	// Here one could re-scan m_JoinedGroups, find the next group that needs reporting (if any),
+	// calculate a new random delay for it, and set m_Timer again.
+	// For this simplified version, we only handle one report per query.
+	// m_hKernelTimer is cleared by StaticTimerHandler after this returns
 }

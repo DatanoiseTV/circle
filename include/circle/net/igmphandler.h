@@ -29,7 +29,7 @@ struct TIGMPHeader // Basic IGMPv2 Header
 __attribute__((packed));
 
 
-class CIGMPHandler : public CTimerListener // Inherit from CTimerListener for future timer needs
+class CIGMPHandler // Removed CTimerListener
 {
 public:
 	CIGMPHandler (CNetConfig *pNetConfig, CNetworkLayer *pNetworkLayer);
@@ -44,10 +44,11 @@ public:
 	void JoinGroup (const CIPAddress &rGroupAddress);
 	void LeaveGroup (const CIPAddress &rGroupAddress);
 
-	// CTimerListener method (for future use, e.g., query responses, periodic reports)
-	void TimerHandler (void) override;
-
 private:
+	// Static timer handler for kernel timer
+	static void StaticTimerHandler(TKernelTimerHandle hTimer, void *pParam, void *pContext);
+	void InstanceTimerHandler(void);
+
 	struct TGroupMembership
 	{
 		CIPAddress	Address;
@@ -59,7 +60,8 @@ private:
 	CNetConfig    *m_pNetConfig;
 	CNetworkLayer *m_pNetworkLayer;
 	CList<TGroupMembership *> m_JoinedGroups;
-	CTimer m_Timer; // General purpose timer for IGMP actions
+	// CTimer m_Timer; // Removed, replaced by TKernelTimerHandle
+	TKernelTimerHandle m_hKernelTimer;      // Handle for the kernel timer
 
 	// Members for scheduled report management
 	boolean    m_bReportScheduled;      // True if a report is currently scheduled
