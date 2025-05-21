@@ -90,20 +90,25 @@ void CNetworkLayer::Process (void)
 		}
 
 		CIPAddress IPAddressDestination (pHeader->DestinationAddress);
-		if (!pOwnIPAddress->IsNull ())
+		if (!pOwnIPAddress->IsNull ()) // If this device has an IP address
 		{
-			if (   *pOwnIPAddress != IPAddressDestination
-			    && !IPAddressDestination.IsBroadcast ()
-			    && *m_pNetConfig->GetBroadcastAddress () != IPAddressDestination)
+			if (   *pOwnIPAddress != IPAddressDestination              // Not our unicast IP
+			    && !IPAddressDestination.IsBroadcast ()             // Not a broadcast IP
+			    && !IPAddressDestination.IsMulticast ()             // AND Not a multicast IP
+			    && (*m_pNetConfig->GetBroadcastAddress () != IPAddressDestination)) // Also not the subnet broadcast
 			{
-				continue;
+				continue; // Then drop
 			}
 		}
-		else
+		else // If this device does not have an IP address yet (e.g., during DHCP)
 		{
-			if (!IPAddressDestination.IsBroadcast ())
+			// Only allow broadcast or multicast packets through, as we can't match a unicast IP.
+			// This is important for DHCP which uses broadcast.
+			// Multicast might be less relevant here but allowing it is harmless.
+			if (   !IPAddressDestination.IsBroadcast ()
+			    && !IPAddressDestination.IsMulticast ())
 			{
-				continue;
+				continue; // Drop if not broadcast or multicast
 			}
 		}
 

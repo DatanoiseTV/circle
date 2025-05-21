@@ -70,7 +70,12 @@ public:
 				  u16 nSendPort, u16 nReceivePort,
 				  int nProtocol);
 
+	int JoinMulticastGroup (const CIPAddress &rGroupAddress);
+	int LeaveMulticastGroup (const CIPAddress &rGroupAddress);
+	boolean IsMulticastConnection(void) const; // Helper to check if it's joined to a group
+
 private:
+	CIPAddress m_MulticastGroup; // Stores the joined multicast group
 	boolean m_bOpen;
 	boolean m_bActiveOpen;
 	CNetQueue m_RxQueue;
